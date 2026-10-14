@@ -136,6 +136,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem('jb:'+k, JSON.stringify(v)); }catch(e){} }
 };
 let cfg  = Object.assign({}, DEFAULTS, store.get('cfg', {}));
+cfg.base = DEFAULTS.base; cfg.apiKey = '';    // backup source is fixed; no key needed
 let favs = store.get('favs', []);          // array of stopNumber strings
 
 // ---------- state ----------
@@ -498,18 +499,15 @@ function render(){
   }
   if(tab==='settings'){
     h+=`<label for="refresh">Refresh every (seconds)</label><input id="refresh" type="number" min="10" value="${cfg.refresh}">
-      <div class="help">Lower is more live but hits the feed's hourly limit sooner. 30 s is a good balance.</div>
+      <div class="help">Lower is more live but uses a little more mobile data and battery. 30 s is a good balance.</div>
       <label for="radius">Show stops within (metres)</label><input id="radius" type="number" min="100" step="100" value="${cfg.radius}">
       <label for="walk">Your walking speed (metres per minute)</label><input id="walk" type="number" min="30" value="${cfg.walkSpeed}">
       <div class="help">80 is a normal pace, 60 with shopping or kids, 100 if you're quick.</div>
-      <label for="key">opendata.je API key (optional)</label><input id="key" type="text" value="${esc(cfg.apiKey)}" placeholder="leave blank for the free limit">
       <label>Connection check</label>
       <div class="help">Government feed: <b>${esc(diag.gov||'not tried yet')}</b><br>
-        opendata.je mirror: <b>${esc(diag.od||'not tried yet')}</b><br>
+        Backup source: <b>${esc(diag.od||'not tried yet')}</b><br>
         Stop list: <b>${esc(diag.stops||'not loaded yet')}</b><br>
-        Using now: <b>${source==='gov'?'Government feed':'opendata.je mirror'}</b></div>
-      <label for="base">Mirror address</label><input id="base" type="text" value="${esc(cfg.base)}">
-      <div class="help">Backup source, used only if the government feed doesn't answer. Leave as it is unless it moves.</div>
+        Using now: <b>${source==='gov'?'Government feed':'Backup source (opendata.je)'}</b></div>
       <button class="primary" id="saveBtn">Save settings</button>
       <button class="ghost" id="clearBtn">Clear cached stop list</button>
       <label>Your privacy</label>
@@ -525,7 +523,7 @@ function render(){
   const back=$('#backBtn'); if(back) back.onclick=()=>{ selectedStop=null; departures=null; drawStops(); render(); };
   const save=$('#saveBtn'); if(save) save.onclick=()=>{
     cfg.refresh=+$('#refresh').value||30; cfg.radius=+$('#radius').value||800; cfg.walkSpeed=+$('#walk').value||80;
-    cfg.apiKey=$('#key').value.trim(); cfg.base=$('#base').value.trim()||DEFAULTS.base;
+
     store.set('cfg',cfg); startTimer(); loadBuses(); tab='near'; for(const b of $('#tabs').children) b.setAttribute('aria-selected', b.dataset.tab===tab); render();
   };
   const clr=$('#clearBtn'); if(clr) clr.onclick=async()=>{ store.set('stops',null); await loadStops(); drawStops(); render(); };
