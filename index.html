@@ -232,7 +232,14 @@ function parseTime(t){
 const fetchers = {
   gov: {
     async buses(){
-      const path = me ? `/api/Values/v1/600/${me[0].toFixed(5)}/${me[1].toFixed(5)}/${cfg.radius}/15` : '/api/Values/v1/600';
+      // Privacy: your position is never sent when the full stop list is loaded.
+      // Only if that list is missing do we ask for stops near a ROUGH point
+      // (rounded to about 1 km), never your exact position.
+      let path = '/api/Values/v1/600';
+      if(me && stops.length < 300){
+        const rLat = (Math.round(me[0]*100)/100).toFixed(2), rLon = (Math.round(me[1]*100)/100).toFixed(2);
+        path += `/${rLat}/${rLon}/${cfg.radius + 1000}/40`;
+      }
       const j = await getJSON(GOV + path);
       const nearby = (g(j,'stops')||[]).map(normStop).filter(s=>s.latitude&&s.longitude);
       return { buses:(g(j,'updates')||[]).map(normBus), stops:nearby };
@@ -505,6 +512,8 @@ function render(){
       <div class="help">Backup source, used only if the government feed doesn't answer. Leave as it is unless it moves.</div>
       <button class="primary" id="saveBtn">Save settings</button>
       <button class="ghost" id="clearBtn">Clear cached stop list</button>
+      <label>Your privacy</label>
+      <div class="help">Your exact location stays on this phone. Distances and walking times are worked out here, on the phone. The app only asks the bus feed for bus positions and for the departures of the stop you open. Saved stops and settings are stored on this phone only. No account, no tracking, no ads.</div>
       <div class="help" style="margin-top:14px">Bus positions and departure times come from the Government of Jersey / LibertyBus tracking feed under the Open Government Licence – Jersey. Map © OpenStreetMap contributors. This is an independent tool, not affiliated with LibertyBus.</div>`;
   }
   p.innerHTML=h;
