@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Jersey Buses">
+<meta name="theme-color" content="#1F2A33">
+<title>Jersey Buses — live tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --granite:#1F2A33;   /* header, text */
+    --slate:#52606B;     /* secondary text */
+    --mist:#E9EDF0;      /* borders, sheet bg */
+    --sea:#0F7C7A;       /* you, live, primary */
+    --amber:#D98A17;     /* leave now */
+    --rust:#B23A2B;      /* missed / stale */
+    --paper:#FFFFFF;
+    --sheet-h:44vh;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,Roboto,Helvetica,Arial,sans-serif;color:var(--granite);background:var(--granite);-webkit-text-size-adjust:100%}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+  #map{position:fixed;inset:0;bottom:var(--sheet-h);z-index:0;background:#DDE5E9}
+  .leaflet-control-attribution{font-size:9px;opacity:.75}
+
+  /* top bar floats over map */
+  #top{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 8px) 12px 8px;pointer-events:none}
+  #top>*{pointer-events:auto}
+  #status{flex:1;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);border-radius:999px;padding:8px 14px;font-size:13px;box-shadow:0 2px 10px rgba(31,42,51,.18)}
+  #dot{width:9px;height:9px;border-radius:50%;background:var(--slate);flex:none}
+  #dot.live{background:var(--sea);box-shadow:0 0 0 0 rgba(15,124,122,.5);animation:pulse 2s infinite}
+  #dot.err{background:var(--rust)}
+  @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(15,124,122,0)}100%{box-shadow:0 0 0 0 rgba(15,124,122,0)}}
+  @media (prefers-reduced-motion:reduce){#dot.live{animation:none}}
+  #statusText{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .iconbtn{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.92);backdrop-filter:blur(10px);box-shadow:0 2px 10px rgba(31,42,51,.18);display:grid;place-items:center;font-size:18px}
+  .iconbtn:focus-visible,button:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+
+  /* bottom sheet */
+  #sheet{position:fixed;left:0;right:0;bottom:0;height:var(--sheet-h);z-index:4;background:var(--paper);border-radius:18px 18px 0 0;box-shadow:0 -4px 24px rgba(31,42,51,.25);display:flex;flex-direction:column;overflow:hidden}
+  #grip{height:22px;display:grid;place-items:center;flex:none}
+  #grip i{width:36px;height:5px;border-radius:3px;background:var(--mist);display:block}
+  #tabs{display:flex;gap:4px;padding:0 12px 8px;flex:none}
+  #tabs button{padding:7px 12px;border-radius:999px;font-size:13px;font-weight:600;color:var(--slate);background:var(--mist)}
+  #tabs button[aria-selected=true]{background:var(--granite);color:#fff}
+  #panel{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 12px calc(env(safe-area-inset-bottom) + 12px)}
+
+  .row{display:flex;align-items:center;gap:12px;padding:11px 4px;border-bottom:1px solid var(--mist)}
+  .row:last-child{border-bottom:0}
+  .row.tap{cursor:pointer}
+  .row.tap:active{background:#F5F7F8}
+  .badge{min-width:38px;height:30px;padding:0 8px;border-radius:8px;display:grid;place-items:center;font-weight:800;font-size:15px;color:#fff;flex:none;letter-spacing:.2px}
+  .main{flex:1;min-width:0}
+  .t{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .s{font-size:12.5px;color:var(--slate);margin-top:2px}
+  .right{text-align:right;flex:none}
+  .big{font-size:20px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+  .unit{font-size:11px;color:var(--slate);margin-top:3px}
+  .stale{color:var(--rust)}
+  .go{color:var(--amber)}
+  .ok{color:var(--sea)}
+  .empty{padding:28px 8px;text-align:center;color:var(--slate);font-size:14px;line-height:1.5}
+  .empty b{color:var(--granite)}
+  .note{background:#FFF6E5;border:1px solid #F3D9A4;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.45;margin:8px 0}
+  .note.err{background:#FBEAE7;border-color:#EBB7B0}
+  .note a{color:inherit}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:var(--mist);color:var(--slate);margin-left:6px;vertical-align:middle}
+  .back{display:flex;align-items:center;gap:8px;padding:8px 4px 4px;font-size:14px;font-weight:600;color:var(--sea)}
+  .primary{width:100%;padding:12px;border-radius:12px;background:var(--sea);color:#fff;font-weight:700;font-size:15px;margin:10px 0}
+  .ghost{width:100%;padding:11px;border-radius:12px;background:var(--mist);font-weight:600;font-size:14px;margin:6px 0}
+  label{display:block;font-size:13px;font-weight:600;margin:14px 0 4px}
+  input[type=text],input[type=number]{width:100%;padding:10px;border:1px solid #C9D1D7;border-radius:10px;font:inherit;font-size:14px}
+  .help{font-size:12.5px;color:var(--slate);line-height:1.5;margin-top:4px}
+  .fav{font-size:18px;flex:none;padding:6px;color:#C9D1D7}
+  .fav.on{color:var(--amber)}
+
+  /* map markers */
+  .bus{width:34px;height:34px;position:relative}
+  .bus .arrow{position:absolute;left:50%;top:50%;width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:13px solid var(--c,#333);transform-origin:50% 100%;transform:translate(-50%,-100%) rotate(var(--b,0deg)) translateY(-14px);filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+  .bus .n{position:absolute;inset:4px;border-radius:50%;background:var(--c,#333);color:#fff;font-weight:800;font-size:12px;display:grid;place-items:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+  .bus.old{opacity:.45}
+  .stopm{width:12px;height:12px;border-radius:50%;background:#fff;border:3px solid var(--granite);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+  .stopm.sel{border-color:var(--amber);transform:scale(1.35)}
+  .me{width:18px;height:18px;border-radius:50%;background:var(--sea);border:3px solid #fff;box-shadow:0 0 0 2px var(--sea),0 2px 6px rgba(0,0,0,.4)}
+</style>
+</head>
+<body>
+
+<div id="map" role="application" aria-label="Map of Jersey bus positions"></div>
+
+<div id="top">
+  <div id="status"><span id="dot"></span><span id="statusText">Starting…</span></div>
+  <button class="iconbtn" id="locBtn" title="Centre on me" aria-label="Centre map on my location">◎</button>
+  <button class="iconbtn" id="refreshBtn" title="Refresh now" aria-label="Refresh bus positions">↻</button>
+</div>
+
+<div id="sheet">
+  <div id="grip" aria-hidden="true"><i></i></div>
+  <div id="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="near">Near me</button>
+    <button role="tab" aria-selected="false" data-tab="buses">Buses</button>
+    <button role="tab" aria-selected="false" data-tab="favs">Saved</button>
+    <button role="tab" aria-selected="false" data-tab="settings">Settings</button>
+  </div>
+  <div id="panel" role="tabpanel"></div>
+</div>
+
+<script>
+/* ============================================================
+   Jersey Buses — a personal live bus tracker.
+   Data: Government of Jersey bus tracking feed, via the
+   community HTTPS mirror api.opendata.je (no key needed).
+   Everything is in this one file so it keeps working on its own.
+   ============================================================ */
+
+const DEFAULTS = {
+  base: 'https://api.opendata.je',       // HTTPS mirror of the gov feed
+  refresh: 30,                            // seconds between bus updates
+  radius: 800,                            // metres for "near me" stops
+  walkSpeed: 80,                          // metres per minute (~4.8 km/h)
+  apiKey: ''                              // optional opendata.je key for higher limits
+};
+const JERSEY = [49.2144, -2.1312];
+const STALE_AFTER = 150;                  // seconds; older GPS fix = faded bus
+
+// ---------- tiny persistent store (survives closing Safari) ----------
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem('jb:'+k); return v==null? d : JSON.parse(v);}catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem('jb:'+k, JSON.stringify(v)); }catch(e){} }
+};
+let cfg  = Object.assign({}, DEFAULTS, store.get('cfg', {}));
+let favs = store.get('favs', []);          // array of stopNumber strings
+
+// ---------- state ----------
+let map, meMarker, meCircle, me = null;
+let stops = [];                             // [{name, stopNumber, latitude, longitude, shelter}]
+let buses = [];                             // latest live-updates results
+let busLayer = L.layerGroup(), stopLayer = L.layerGroup();
+let busMarkers = new Map(), stopMarkers = new Map();
+let tab = 'near', selectedStop = null, departures = null, depError = null;
+let timer = null, lastUpdate = null, lastError = null;
+
+// ---------- helpers ----------
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function haversine(a, b){
+  const R=6371000, toR=x=>x*Math.PI/180;
+  const dLat=toR(b[0]-a[0]), dLon=toR(b[1]-a[1]);
+  const h=Math.sin(dLat/2)**2+Math.cos(toR(a[0]))*Math.cos(toR(b[0]))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+const fmtDist = m => m<1000 ? Math.round(m)+' m' : (m/1000).toFixed(1)+' km';
+const walkMin = m => Math.max(1, Math.round(m/cfg.walkSpeed));
+function routeColor(n){
+  // stable colour per route number; 12 hues chosen to stay readable on white text
+  const hues=[200,340,25,265,150,50,300,180,0,225,100,320];
+  let h=0; for(const c of String(n)) h=(h*31+c.charCodeAt(0))>>>0;
+  return `hsl(${hues[h%hues.length]} 55% 40%)`;
+}
+function agoText(sec){
+  if(sec==null) return '';
+  if(sec<60) return sec+'s ago';
+  return Math.round(sec/60)+' min ago';
+}
+function etaMin(iso){ return Math.round((new Date(iso)-Date.now())/60000); }
+function setStatus(text, cls){ $('#statusText').textContent=text; $('#dot').className=cls||''; }
+
+async function api(path){
+  const url = cfg.base.replace(/\/$/,'') + path;
+  const headers = {'Accept':'application/json'};
+  if(cfg.apiKey) headers['x-api-key']=cfg.apiKey;
+  const r = await fetch(url, {headers, cache:'no-store'});
+  if(r.status===429) throw new Error('Rate limit reached — wait a minute, or add an API key in Settings.');
+  if(!r.ok) throw new Error('Feed returned '+r.status);
+  return r.json();
+}
+
+// ---------- map ----------
+function initMap(){
+  map = L.map('map',{zoomControl:false, attributionControl:true}).setView(JERSEY, 12);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{
+    maxZoom:19, attribution:'© OpenStreetMap contributors © CARTO · Bus data: Government of Jersey via opendata.je'
+  }).addTo(map);
+  stopLayer.addTo(map); busLayer.addTo(map);
+  map.on('zoomend', drawStops);
+}
+function busIcon(b){
+  const old = (b.secondsAgo??0) > STALE_AFTER;
+  return L.divIcon({className:'', iconSize:[34,34], iconAnchor:[17,17],
+    html:`<div class="bus${old?' old':''}" style="--c:${routeColor(b.serviceNumber)};--b:${b.bearing??0}deg"><div class="arrow"></div><div class="n">${esc(b.serviceNumber)}</div></div>`});
+}
+function drawBuses(){
+  const seen=new Set();
+  for(const b of buses){
+    if(b.latitude==null) continue;
+    seen.add(b.deviceId);
+    let m=busMarkers.get(b.deviceId);
+    if(!m){
+      m=L.marker([b.latitude,b.longitude],{icon:busIcon(b), zIndexOffset:500}).addTo(busLayer);
+      busMarkers.set(b.deviceId,m);
+    }else{ m.setLatLng([b.latitude,b.longitude]); m.setIcon(busIcon(b)); }
+    m.bindPopup(busPopup(b));
+  }
+  for(const [id,m] of busMarkers){ if(!seen.has(id)){ busLayer.removeLayer(m); busMarkers.delete(id);} }
+}
+function busPopup(b){
+  const d = me ? fmtDist(haversine(me,[b.latitude,b.longitude]))+' from you · ' : '';
+  return `<b>Route ${esc(b.serviceNumber)}</b> ${esc(b.direction||'')}<br>${d}GPS fix ${agoText(b.secondsAgo)}<br><small>${esc(b.registration||'')}</small>`;
+}
+function drawStops(){
+  // only draw stops when zoomed in enough to be useful
+  const show = map.getZoom() >= 14;
+  const bounds = map.getBounds().pad(0.2);
+  for(const s of stops){
+    const inView = show && bounds.contains([s.latitude,s.longitude]);
+    let m=stopMarkers.get(s.stopNumber);
+    if(inView && !m){
+      m=L.marker([s.latitude,s.longitude],{icon:stopIcon(s), zIndexOffset:100}).addTo(stopLayer);
+      m.on('click',()=>selectStop(s));
+      stopMarkers.set(s.stopNumber,m);
+    }else if(!inView && m){ stopLayer.removeLayer(m); stopMarkers.delete(s.stopNumber); }
+    else if(m){ m.setIcon(stopIcon(s)); }
+  }
+}
+function stopIcon(s){
+  const sel = selectedStop && selectedStop.stopNumber===s.stopNumber;
+  return L.divIcon({className:'', iconSize:[12,12], iconAnchor:[6,6], html:`<div class="stopm${sel?' sel':''}" title="${esc(s.name)}"></div>`});
+}
+function drawMe(){
+  if(!me) return;
+  if(!meMarker){
+    meMarker=L.marker(me,{icon:L.divIcon({className:'',iconSize:[18,18],iconAnchor:[9,9],html:'<div class="me"></div>'}), zIndexOffset:1000}).addTo(map);
+    meCircle=L.circle(me,{radius:me.acc||0,color:'#0F7C7A',weight:1,fillOpacity:.08}).addTo(map);
+  }else{ meMarker.setLatLng(me); meCircle.setLatLng(me).setRadius(me.acc||0); }
+}
+
+// ---------- data ----------
+async function loadStops(){
+  const cached = store.get('stops');
+  if(cached && cached.at && Date.now()-cached.at < 7*86400e3){ stops=cached.list; return; }
+  const j = await api('/v1/bus/stops');
+  stops = (j.results||[]).filter(s=>s.latitude&&s.longitude);
+  store.set('stops',{at:Date.now(), list:stops});
+}
+async function loadBuses(){
+  setStatus('Updating…','');
+  try{
+    const j = await api('/v1/bus/live-updates?secondsAgo=600');
+    buses = (j.results||[]).filter(b=>b.latitude&&b.longitude);
+    lastUpdate = Date.now(); lastError=null;
+    drawBuses();
+    if(selectedStop) loadDepartures(selectedStop.stopNumber, true);
+    setStatus(`${buses.length} buses live · updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}`,'live');
+  }catch(e){
+    lastError = e.message;
+    setStatus('Feed unavailable — '+e.message,'err');
+  }
+  render();
+}
+async function loadDepartures(stopNumber, silent){
+  if(!silent){ departures=null; depError=null; render(); }
+  try{
+    const j = await api('/v1/bus/stops/'+encodeURIComponent(stopNumber));
+    departures = (j.results && j.results.departures) || [];
+  }catch(e){ depError=e.message; }
+  render();
+}
+function startTimer(){
+  clearInterval(timer);
+  timer=setInterval(loadBuses, Math.max(10, cfg.refresh)*1000);
+}
+
+// ---------- location ----------
+function startLocation(){
+  if(!navigator.geolocation){ setStatus('Location not supported on this device','err'); return; }
+  navigator.geolocation.watchPosition(p=>{
+    const first = !me;
+    me=[p.coords.latitude,p.coords.longitude]; me.acc=p.coords.accuracy;
+    drawMe();
+    if(first){ map.setView(me, 15); drawStops(); }
+    if(tab==='near') render();
+  }, err=>{
+    setStatus('Location off — allow it in Safari settings to see distances','err');
+    render();
+  }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
+}
+
+// ---------- UI ----------
+function selectStop(s){
+  selectedStop=s; tab='near';
+  for(const b of $('#tabs').children) b.setAttribute('aria-selected', b.dataset.tab===tab);
+  drawStops();
+  map.panTo([s.latitude,s.longitude]);
+  loadDepartures(s.stopNumber);
+}
+function toggleFav(n){
+  n=String(n);
+  favs = favs.includes(n) ? favs.filter(x=>x!==n) : [...favs,n];
+  store.set('favs',favs); render();
+}
+function nearestStops(limit=8){
+  if(!me) return [];
+  return stops.map(s=>({s, d:haversine(me,[s.latitude,s.longitude])}))
+    .filter(x=>x.d<=cfg.radius).sort((a,b)=>a.d-b.d).slice(0,limit);
+}
+function stopRow(s, dist){
+  const fav=favs.includes(String(s.stopNumber));
+  return `<div class="row tap" data-stop="${esc(s.stopNumber)}">
+    <div class="main"><div class="t">${esc(s.name)} <span class="pill">${esc(s.stopNumber)}</span>${s.shelter?'<span class="pill">shelter</span>':''}</div>
+    <div class="s">${dist!=null? fmtDist(dist)+' · about '+walkMin(dist)+' min walk' : 'Tap for live departures'}</div></div>
+    ${dist!=null?`<div class="right"><div class="big">${walkMin(dist)}</div><div class="unit">min walk</div></div>`:''}
+    <button class="fav${fav?' on':''}" data-fav="${esc(s.stopNumber)}" aria-label="${fav?'Remove from saved':'Save this stop'}">★</button>
+  </div>`;
+}
+function errorNote(){
+  if(!lastError) return '';
+  const inFrame = window.top!==window.self;
+  return `<div class="note err"><b>Can't reach the bus feed.</b> ${esc(lastError)}${inFrame?
+    '<br><br>If you are viewing this inside a chat preview, the preview blocks outside connections. Download the file and open it in Safari — it works there.':''}</div>`;
+}
+function render(){
+  const p=$('#panel'); let h='';
+  if(tab==='near'){
+    h+=errorNote();
+    if(selectedStop){
+      const s=selectedStop, d=me?haversine(me,[s.latitude,s.longitude]):null, w=d!=null?walkMin(d):null;
+      h+=`<button class="back" id="backBtn">‹ All nearby stops</button>`;
+      h+=stopRow(s,d);
+      if(departures===null && !depError) h+=`<div class="empty">Loading live departures…</div>`;
+      else if(depError) h+=`<div class="note err">${esc(depError)}</div>`;
+      else if(!departures.length) h+=`<div class="empty"><b>No buses due</b> in the next while at this stop.</div>`;
+      else h+=departures.map(dp=>{
+        const m=etaMin(dp.eta);
+        let verdict='', cls='';
+        if(w!=null){
+          const spare=m-w;
+          if(spare<0){verdict='Too late — you would miss it';cls='stale';}
+          else if(spare<=2){verdict='Leave now';cls='go';}
+          else {verdict=`Leave in ${spare} min`;cls='ok';}
+        }
+        return `<div class="row"><div class="badge" style="background:${routeColor(dp.serviceNumber)}">${esc(dp.serviceNumber)}</div>
+          <div class="main"><div class="t">to ${esc(dp.destination)}</div><div class="s ${cls}">${verdict||'Live estimate'}</div></div>
+          <div class="right"><div class="big ${m<=0?'go':''}">${m<=0?'now':m}</div><div class="unit">${m<=0?'':'min'}</div></div></div>`;
+      }).join('');
+      h+=`<div class="help" style="margin-top:10px">Times are LibertyBus live estimates. Walk time assumes ${cfg.walkSpeed} m/min; change it in Settings.</div>`;
+    }else{
+      if(!me) h+=`<div class="empty"><b>Waiting for your location.</b><br>Allow location access to see how far you are from each stop and whether you can make the next bus.</div>`;
+      else{
+        const near=nearestStops();
+        if(!near.length) h+=`<div class="empty"><b>No stops within ${cfg.radius} m.</b><br>Widen the radius in Settings.</div>`;
+        else h+=near.map(x=>stopRow(x.s,x.d)).join('');
+      }
+    }
+  }
+  if(tab==='buses'){
+    h+=errorNote();
+    if(!buses.length) h+=`<div class="empty"><b>No buses reporting right now.</b><br>Outside service hours the feed is empty. Buses run roughly 07:00–22:00.</div>`;
+    else{
+      const list=buses.map(b=>({b, d:me?haversine(me,[b.latitude,b.longitude]):null}))
+        .sort((a,b)=>(a.d??1e9)-(b.d??1e9) || String(a.b.serviceNumber).localeCompare(String(b.b.serviceNumber),undefined,{numeric:true}));
+      h+=list.map(({b,d})=>{
+        const old=(b.secondsAgo??0)>STALE_AFTER;
+        return `<div class="row tap" data-bus="${esc(b.deviceId)}"><div class="badge" style="background:${routeColor(b.serviceNumber)}">${esc(b.serviceNumber)}</div>
+          <div class="main"><div class="t">${esc(b.direction||'')} ${b.serviceOperator&&b.serviceOperator!=='LibertyBus'?'· '+esc(b.serviceOperator):''}</div>
+          <div class="s ${old?'stale':''}">GPS fix ${agoText(b.secondsAgo)}${old?' · position may be off':''}</div></div>
+          ${d!=null?`<div class="right"><div class="big">${fmtDist(d)}</div><div class="unit">from you</div></div>`:''}</div>`;
+      }).join('');
+    }
+  }
+  if(tab==='favs'){
+    if(!favs.length) h+=`<div class="empty"><b>No saved stops yet.</b><br>Tap ★ on any stop — your home and work stops are the useful ones.</div>`;
+    else h+=favs.map(n=>{ const s=stops.find(x=>String(x.stopNumber)===n); if(!s) return ''; return stopRow(s, me?haversine(me,[s.latitude,s.longitude]):null); }).join('');
+  }
+  if(tab==='settings'){
+    h+=`<label for="refresh">Refresh every (seconds)</label><input id="refresh" type="number" min="10" value="${cfg.refresh}">
+      <div class="help">Lower is more live but hits the feed's hourly limit sooner. 30 s is a good balance.</div>
+      <label for="radius">Show stops within (metres)</label><input id="radius" type="number" min="100" step="100" value="${cfg.radius}">
+      <label for="walk">Your walking speed (metres per minute)</label><input id="walk" type="number" min="30" value="${cfg.walkSpeed}">
+      <div class="help">80 is a normal pace, 60 with shopping or kids, 100 if you're quick.</div>
+      <label for="key">opendata.je API key (optional)</label><input id="key" type="text" value="${esc(cfg.apiKey)}" placeholder="leave blank for the free limit">
+      <label for="base">Feed address</label><input id="base" type="text" value="${esc(cfg.base)}">
+      <div class="help">Only change this if the feed moves. The original government feed is <code>http://sojbuslivetimespublic.azurewebsites.net</code> (plain http, so Safari needs a mirror like this one).</div>
+      <button class="primary" id="saveBtn">Save settings</button>
+      <button class="ghost" id="clearBtn">Clear cached stop list</button>
+      <div class="help" style="margin-top:14px">Bus positions and departure times come from the Government of Jersey / LibertyBus tracking feed under the Open Government Licence – Jersey. Map © OpenStreetMap contributors, tiles by CARTO. This is an independent tool, not affiliated with LibertyBus.</div>`;
+  }
+  p.innerHTML=h;
+
+  // wire up
+  p.querySelectorAll('[data-stop]').forEach(el=>el.addEventListener('click',e=>{ if(e.target.closest('[data-fav]')) return; const s=stops.find(x=>String(x.stopNumber)===el.dataset.stop); if(s) selectStop(s); }));
+  p.querySelectorAll('[data-fav]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation(); toggleFav(el.dataset.fav);}));
+  p.querySelectorAll('[data-bus]').forEach(el=>el.addEventListener('click',()=>{ const m=busMarkers.get(el.dataset.bus); if(m){ map.setView(m.getLatLng(),16); m.openPopup(); } }));
+  const back=$('#backBtn'); if(back) back.onclick=()=>{ selectedStop=null; departures=null; drawStops(); render(); };
+  const save=$('#saveBtn'); if(save) save.onclick=()=>{
+    cfg.refresh=+$('#refresh').value||30; cfg.radius=+$('#radius').value||800; cfg.walkSpeed=+$('#walk').value||80;
+    cfg.apiKey=$('#key').value.trim(); cfg.base=$('#base').value.trim()||DEFAULTS.base;
+    store.set('cfg',cfg); startTimer(); loadBuses(); tab='near'; for(const b of $('#tabs').children) b.setAttribute('aria-selected', b.dataset.tab===tab); render();
+  };
+  const clr=$('#clearBtn'); if(clr) clr.onclick=async()=>{ store.set('stops',null); await loadStops(); drawStops(); render(); };
+}
+
+$('#tabs').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  tab=b.dataset.tab; for(const x of $('#tabs').children) x.setAttribute('aria-selected', x===b); render();
+});
+$('#locBtn').onclick=()=>{ if(me) map.setView(me,16); else startLocation(); };
+$('#refreshBtn').onclick=()=>loadBuses();
+
+// drag the sheet up/down
+(function(){
+  const sheet=$('#sheet'); let startY=null, startH=null;
+  const h=()=>parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sheet-h'));
+  $('#grip').addEventListener('touchstart',e=>{startY=e.touches[0].clientY; startH=sheet.getBoundingClientRect().height;},{passive:true});
+  $('#grip').addEventListener('touchmove',e=>{ if(startY==null) return; const nh=Math.min(innerHeight*.85,Math.max(120,startH+(startY-e.touches[0].clientY))); document.documentElement.style.setProperty('--sheet-h',nh+'px'); },{passive:true});
+  $('#grip').addEventListener('touchend',()=>{startY=null; map.invalidateSize();});
+  $('#grip').addEventListener('click',()=>{ const cur=sheet.getBoundingClientRect().height; document.documentElement.style.setProperty('--sheet-h', cur>innerHeight*.3?'120px':'44vh'); setTimeout(()=>map.invalidateSize(),50); });
+})();
+
+// ---------- boot ----------
+(async function(){
+  initMap(); render();
+  startLocation();
+  try{ await loadStops(); drawStops(); }catch(e){ lastError='Stop list: '+e.message; }
+  await loadBuses();
+  startTimer();
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) loadBuses(); });
+})();
+</script>
+</body>
+</html>
