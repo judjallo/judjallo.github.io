@@ -142,6 +142,7 @@ let stops = [];                             // [{name, stopNumber, latitude, lon
 let buses = [];                             // latest live-updates results
 let busLayer = L.layerGroup(), stopLayer = L.layerGroup();
 let busMarkers = new Map(), stopMarkers = new Map();
+let locState = 'waiting';                  // waiting | ok | denied | unavailable
 let tab = 'near', selectedStop = null, departures = null, depError = null;
 let timer = null, lastUpdate = null, lastError = null;
 
@@ -171,20 +172,25 @@ function etaMin(iso){ return Math.round((new Date(iso)-Date.now())/60000); }
 function setStatus(text, cls){ $('#statusText').textContent=text; $('#dot').className=cls||''; }
 
 async function api(path){
-  const url = cfg.base.replace(/\/$/,'') + path;
-  const headers = {'Accept':'application/json'};
-  if(cfg.apiKey) headers['x-api-key']=cfg.apiKey;
-  const r = await fetch(url, {headers, cache:'no-store'});
-  if(r.status===429) throw new Error('Rate limit reached — wait a minute, or add an API key in Settings.');
-  if(!r.ok) throw new Error('Feed returned '+r.status);
+  // Plain GET with no custom headers: anything extra makes Safari send a
+  // pre-check request that this server rejects.
+  let url = cfg.base.replace(/\/$/,'') + path;
+  if(cfg.apiKey) url += (url.includes('?')?'&':'?') + 'auth=' + encodeURIComponent(cfg.apiKey);
+  const r = await fetch(url);
+  if(r.status===429) throw new Error('Too many requests. Wait a minute, or add an API key in Settings.');
+  if(!r.ok){
+    let msg='';
+    try{ const j=await r.json(); msg=j.message||j.error||''; }catch(e){}
+    throw new Error('Feed returned '+r.status+(msg?' ('+msg+')':''));
+  }
   return r.json();
 }
 
 // ---------- map ----------
 function initMap(){
   map = L.map('map',{zoomControl:false, attributionControl:true}).setView(JERSEY, 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{
-    maxZoom:19, attribution:'© OpenStreetMap contributors © CARTO · Bus data: Government of Jersey via opendata.je'
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19, attribution:'© OpenStreetMap contributors · Bus data: Government of Jersey via opendata.je'
   }).addTo(map);
   stopLayer.addTo(map); busLayer.addTo(map);
   map.on('zoomend', drawStops);
@@ -250,7 +256,9 @@ async function loadStops(){
 async function loadBuses(){
   setStatus('Updating…','');
   try{
-    const j = await api('/v1/bus/live-updates?secondsAgo=600');
+    let j;
+    try{ j = await api('/v1/bus/live-updates?secondsAgo=600'); }
+    catch(e){ j = await api('/v1/bus/live-updates'); }
     buses = (j.results||[]).filter(b=>b.latitude&&b.longitude);
     lastUpdate = Date.now(); lastError=null;
     drawBuses();
@@ -276,18 +284,21 @@ function startTimer(){
 }
 
 // ---------- location ----------
+let watchId = null;
 function startLocation(){
-  if(!navigator.geolocation){ setStatus('Location not supported on this device','err'); return; }
-  navigator.geolocation.watchPosition(p=>{
+  if(!navigator.geolocation){ locState='unavailable'; render(); return; }
+  if(watchId!=null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(p=>{
+    locState='ok';
     const first = !me;
     me=[p.coords.latitude,p.coords.longitude]; me.acc=p.coords.accuracy;
     drawMe();
     if(first){ map.setView(me, 15); drawStops(); }
     if(tab==='near') render();
   }, err=>{
-    setStatus('Location off — allow it in Safari settings to see distances','err');
+    locState = err.code===1 ? 'denied' : 'unavailable';
     render();
-  }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
+  }, {enableHighAccuracy:true, maximumAge:5000, timeout:20000});
 }
 
 // ---------- UI ----------
@@ -349,7 +360,12 @@ function render(){
       }).join('');
       h+=`<div class="help" style="margin-top:10px">Times are LibertyBus live estimates. Walk time assumes ${cfg.walkSpeed} m/min; change it in Settings.</div>`;
     }else{
-      if(!me) h+=`<div class="empty"><b>Waiting for your location.</b><br>Allow location access to see how far you are from each stop and whether you can make the next bus.</div>`;
+      if(!me && locState==='denied') h+=`<div class="note"><b>Location is blocked for this page.</b> To switch it on:<br>
+        1. iPhone <b>Settings → Privacy &amp; Security → Location Services</b> → make sure it's on, then tap <b>Safari Websites</b> → <b>While Using the App</b>.<br>
+        2. Back in Safari, tap <b>aA</b> (or the page icon) in the address bar → <b>Website Settings → Location → Allow</b>.<br>
+        3. Reload the page, or tap ◎ at the top.</div>`;
+      else if(!me && locState==='unavailable') h+=`<div class="note">Your phone couldn't find your position yet. Check Location Services is on, then tap ◎ at the top to try again.</div>`;
+      else if(!me) h+=`<div class="empty"><b>Finding your location…</b><br>If Safari asks, tap <b>Allow</b>. If nothing happens, tap ◎ at the top.</div>`;
       else{
         const near=nearestStops();
         if(!near.length) h+=`<div class="empty"><b>No stops within ${cfg.radius} m.</b><br>Widen the radius in Settings.</div>`;
@@ -408,7 +424,7 @@ $('#tabs').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b) return;
   tab=b.dataset.tab; for(const x of $('#tabs').children) x.setAttribute('aria-selected', x===b); render();
 });
-$('#locBtn').onclick=()=>{ if(me) map.setView(me,16); else startLocation(); };
+$('#locBtn').onclick=()=>{ if(me) map.setView(me,16); else { locState='waiting'; render(); startLocation(); } };
 $('#refreshBtn').onclick=()=>loadBuses();
 
 // drag the sheet up/down
