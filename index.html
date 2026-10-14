@@ -168,22 +168,101 @@ function agoText(sec){
   if(sec<60) return sec+'s ago';
   return Math.round(sec/60)+' min ago';
 }
-function etaMin(iso){ return Math.round((new Date(iso)-Date.now())/60000); }
+function etaMin(t){ return Math.round((parseTime(t)-Date.now())/60000); }
 function setStatus(text, cls){ $('#statusText').textContent=text; $('#dot').className=cls||''; }
 
-async function api(path){
-  // Plain GET with no custom headers: anything extra makes Safari send a
-  // pre-check request that this server rejects.
+// Two sources for the same live data. "gov" is the Government of Jersey
+// tracking feed itself; "od" is the opendata.je mirror. The app uses
+// whichever answers, remembers it, and falls back to the other.
+const GOV = 'https://sojbuslivetimespublic.azurewebsites.net';
+let source = store.get('source','gov');
+let diag = {};                                   // last result per source, shown in Settings
+
+async function getJSON(url){
+  const r = await fetch(url);                    // plain GET, no custom headers
+  const text = await r.text();
+  if(!r.ok){
+    let msg = text.slice(0,120).replace(/\s+/g,' ').trim();
+    try{ const j=JSON.parse(text); msg = j.message || msg; }catch(e){}
+    throw new Error(r.status + (msg ? ' ' + msg : ''));
+  }
+  return JSON.parse(text);
+}
+function odURL(path){
   let url = cfg.base.replace(/\/$/,'') + path;
   if(cfg.apiKey) url += (url.includes('?')?'&':'?') + 'auth=' + encodeURIComponent(cfg.apiKey);
-  const r = await fetch(url);
-  if(r.status===429) throw new Error('Too many requests. Wait a minute, or add an API key in Settings.');
-  if(!r.ok){
-    let msg='';
-    try{ const j=await r.json(); msg=j.message||j.error||''; }catch(e){}
-    throw new Error('Feed returned '+r.status+(msg?' ('+msg+')':''));
+  return url;
+}
+// read a field whatever its capitalisation (gov feed uses PascalCase)
+function g(o, ...names){
+  if(!o) return undefined;
+  for(const n of names){ if(o[n]!==undefined) return o[n]; }
+  const keys=Object.keys(o);
+  for(const n of names){ const k=keys.find(k=>k.toLowerCase()===n.toLowerCase()); if(k) return o[k]; }
+  return undefined;
+}
+function normBus(o){
+  return { deviceId:g(o,'deviceId','DeviceId'), registration:g(o,'registration','AssetRegistrationNumber'),
+    serviceNumber:g(o,'serviceNumber','ServiceNumber','line'), serviceOperator:g(o,'serviceOperator','ServiceOperator'),
+    direction:g(o,'direction','Direction'), latitude:+g(o,'latitude','Latitude'), longitude:+g(o,'longitude','Longitude'),
+    bearing:+g(o,'bearing','Bearing')||0, secondsAgo:g(o,'secondsAgo','SecondsAgo') };
+}
+function normStop(o){
+  return { name:g(o,'name','StopName','Name','Description')||('Stop '+g(o,'stopNumber','StopNumber')),
+    stopNumber:String(g(o,'stopNumber','StopNumber','Number','Id')),
+    latitude:+g(o,'latitude','Latitude','Lat'), longitude:+g(o,'longitude','Longitude','Lon','Lng'),
+    shelter:!!g(o,'shelter','Shelter') };
+}
+function normDep(o){
+  return { serviceNumber:g(o,'serviceNumber','ServiceNumber'), destination:g(o,'destination','Destination'),
+    eta:g(o,'eta','ETA','Eta') };
+}
+// Safari can't parse 7-digit fractional seconds; trim them. Also accept "HH:MM".
+function parseTime(t){
+  if(!t) return NaN;
+  t=String(t);
+  if(/^\d{1,2}:\d{2}(:\d{2})?$/.test(t)){ const [h,m,s]=t.split(':').map(Number); const d=new Date(); d.setHours(h,m,s||0,0); if(d-Date.now()<-6*3600e3) d.setDate(d.getDate()+1); return +d; }
+  return Date.parse(t.replace(/(\.\d{3})\d+/,'$1'));
+}
+
+const fetchers = {
+  gov: {
+    async buses(){
+      const path = me ? `/api/Values/v1/600/${me[0].toFixed(5)}/${me[1].toFixed(5)}/${cfg.radius}/15` : '/api/Values/v1/600';
+      const j = await getJSON(GOV + path);
+      const nearby = (g(j,'stops')||[]).map(normStop).filter(s=>s.latitude&&s.longitude);
+      return { buses:(g(j,'updates')||[]).map(normBus), stops:nearby };
+    },
+    async deps(n){
+      const j = await getJSON(GOV + '/api/Values/v1/BusStop/' + encodeURIComponent(n));
+      const arr = Array.isArray(j) ? j : (g(j,'departures')||[]);
+      return arr.map(normDep);
+    }
+  },
+  od: {
+    async buses(){
+      let j; try{ j = await getJSON(odURL('/v1/bus/live-updates?secondsAgo=600')); }
+      catch(e){ j = await getJSON(odURL('/v1/bus/live-updates')); }
+      return { buses:(j.results||[]).map(normBus), stops:[] };
+    },
+    async deps(n){
+      const j = await getJSON(odURL('/v1/bus/stops/' + encodeURIComponent(n)));
+      return ((j.results && j.results.departures) || []).map(normDep);
+    }
   }
-  return r.json();
+};
+// try the remembered source, then the other one
+async function fromAny(kind, arg){
+  const order = source==='od' ? ['od','gov'] : ['gov','od'];
+  const errs=[];
+  for(const s of order){
+    try{
+      const out = await fetchers[s][kind](arg);
+      diag[s]='OK'; if(source!==s){ source=s; store.set('source',s); }
+      return out;
+    }catch(e){ diag[s]=e.message; errs.push((s==='gov'?'Gov feed: ':'Mirror: ')+e.message); }
+  }
+  throw new Error(errs.join(' · '));
 }
 
 // ---------- map ----------
@@ -246,36 +325,50 @@ function drawMe(){
 }
 
 // ---------- data ----------
+function mergeStops(list){
+  if(!list || !list.length) return false;
+  const byNum = new Map(stops.map(s=>[String(s.stopNumber), s]));
+  let added=false;
+  for(const s of list){ if(!byNum.has(s.stopNumber)){ byNum.set(s.stopNumber, s); added=true; } }
+  if(added){ stops=[...byNum.values()]; store.set('stops',{at:Date.now(), list:stops}); }
+  return added;
+}
 async function loadStops(){
   const cached = store.get('stops');
-  if(cached && cached.at && Date.now()-cached.at < 7*86400e3){ stops=cached.list; return; }
-  const j = await api('/v1/bus/stops');
-  stops = (j.results||[]).filter(s=>s.latitude&&s.longitude);
-  store.set('stops',{at:Date.now(), list:stops});
+  if(cached && cached.list && cached.list.length > 300 && Date.now()-cached.at < 7*86400e3){ stops=cached.list; return; }
+  if(cached && cached.list) stops = cached.list;
+  try{
+    const j = await getJSON(odURL('/v1/bus/stops'));
+    mergeStops((j.results||[]).map(normStop).filter(s=>s.latitude&&s.longitude));
+    diag.stops='OK, '+stops.length+' stops';
+  }catch(e){
+    diag.stops='Full list unavailable ('+e.message+'). Nearby stops come from the gov feed instead.';
+  }
 }
 async function loadBuses(){
   setStatus('Updating…','');
   try{
-    let j;
-    try{ j = await api('/v1/bus/live-updates?secondsAgo=600'); }
-    catch(e){ j = await api('/v1/bus/live-updates'); }
-    buses = (j.results||[]).filter(b=>b.latitude&&b.longitude);
+    const out = await fromAny('buses');
+    buses = out.buses.filter(b=>b.latitude&&b.longitude);
+    if(mergeStops(out.stops)) drawStops();
     lastUpdate = Date.now(); lastError=null;
     drawBuses();
     if(selectedStop) loadDepartures(selectedStop.stopNumber, true);
     setStatus(`${buses.length} buses live · updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}`,'live');
   }catch(e){
     lastError = e.message;
-    setStatus('Feed unavailable — '+e.message,'err');
+    setStatus('Feed unavailable — tap Settings for details','err');
   }
   render();
 }
 async function loadDepartures(stopNumber, silent){
   if(!silent){ departures=null; depError=null; render(); }
   try{
-    const j = await api('/v1/bus/stops/'+encodeURIComponent(stopNumber));
-    departures = (j.results && j.results.departures) || [];
-  }catch(e){ depError=e.message; }
+    departures = (await fromAny('deps', stopNumber))
+      .filter(d=>!isNaN(parseTime(d.eta)))
+      .sort((a,b)=>parseTime(a.eta)-parseTime(b.eta));
+    depError=null;
+  }catch(e){ if(!silent) depError=e.message; }
   render();
 }
 function startTimer(){
@@ -399,8 +492,13 @@ function render(){
       <label for="walk">Your walking speed (metres per minute)</label><input id="walk" type="number" min="30" value="${cfg.walkSpeed}">
       <div class="help">80 is a normal pace, 60 with shopping or kids, 100 if you're quick.</div>
       <label for="key">opendata.je API key (optional)</label><input id="key" type="text" value="${esc(cfg.apiKey)}" placeholder="leave blank for the free limit">
-      <label for="base">Feed address</label><input id="base" type="text" value="${esc(cfg.base)}">
-      <div class="help">Only change this if the feed moves. The original government feed is <code>http://sojbuslivetimespublic.azurewebsites.net</code> (plain http, so Safari needs a mirror like this one).</div>
+      <label>Connection check</label>
+      <div class="help">Government feed: <b>${esc(diag.gov||'not tried yet')}</b><br>
+        opendata.je mirror: <b>${esc(diag.od||'not tried yet')}</b><br>
+        Stop list: <b>${esc(diag.stops||'not loaded yet')}</b><br>
+        Using now: <b>${source==='gov'?'Government feed':'opendata.je mirror'}</b></div>
+      <label for="base">Mirror address</label><input id="base" type="text" value="${esc(cfg.base)}">
+      <div class="help">Backup source, used only if the government feed doesn't answer. Leave as it is unless it moves.</div>
       <button class="primary" id="saveBtn">Save settings</button>
       <button class="ghost" id="clearBtn">Clear cached stop list</button>
       <div class="help" style="margin-top:14px">Bus positions and departure times come from the Government of Jersey / LibertyBus tracking feed under the Open Government Licence – Jersey. Map © OpenStreetMap contributors, tiles by CARTO. This is an independent tool, not affiliated with LibertyBus.</div>`;
